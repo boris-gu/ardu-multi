@@ -8,17 +8,18 @@ Vertical {
     overflow: hidden;
 }
 
-DataTable {
+#table_log {
     margin: 0 0 1 0;
     height: auto;
     min-height: 5;
     max-height: 50%;
 }
 
-TabbedContent {
+#tabbed_textlog {
     height: 1fr;
 }
 
-Log {
+RichLog {
     overflow: auto;
+    margin: 0 0 0 1;
 }
