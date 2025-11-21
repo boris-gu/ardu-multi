@@ -1,0 +1,24 @@
+.big_block {
+    border: $primary round;
+    padding: 1 0 0 0;
+}
+
+Vertical {
+    height: 100%;
+    overflow: hidden;
+}
+
+DataTable {
+    margin: 0 0 1 0;
+    height: auto;
+    min-height: 5;
+    max-height: 50%;
+}
+
+TabbedContent {
+    height: 1fr;
+}
+
+Log {
+    overflow: auto;
+}
