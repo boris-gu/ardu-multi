@@ -56,7 +56,9 @@ class ArduMultiApp(App):
         yield Footer()
         with Vertical():
             yield table
-            yield tabs
+            with tabs:
+                with TabPane("All", id='tab_all'):
+                    yield RichLog(id='textlog_all')
 
     def on_mount(self) -> None:
         self.uart_rx()
@@ -160,6 +162,8 @@ class ArduMultiApp(App):
     def print_textlog(self, id, text: str, style: str=''):
         current_time = time.strftime('[%H:%M:%S]', time.localtime())
         textlog = self.query_one(f'#textlog_{id}', RichLog)
+        textlog.write(Text(f'{current_time} {text}', style=style))
+        textlog = self.query_one('#textlog_all', RichLog)
         textlog.write(Text(f'{current_time} {text}', style=style))
 
 if __name__ == '__main__':
