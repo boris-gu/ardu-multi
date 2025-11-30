@@ -26,7 +26,9 @@ text_severity = (('EMERGENCY', 'red'),
                  ('INFO',      ''),
                  ('DEBUG',     ''))
 
-telems: list[mavutil.mavserial] = []
+# {com_ports:[drone_id]}
+telems: dict[mavutil.mavserial, list[int]] = {}
+# telems: list[mavutil.mavserial] = []
 mav_logs = {}
 
 class ArduMultiApp(App):
@@ -80,8 +82,15 @@ class ArduMultiApp(App):
                     try: # Ловим, если порт был отключен
                         rx_msg = telem.recv_match(blocking=False)
                     except (serial.SerialException, serial.SerialTimeoutException):
-                        telems.remove(telem)
-                        continue
+                        self.call_from_thread(self.print_textlog, None,
+                                              f'{text_severity[1][0]}: {telem.port.name} Disconnected',
+                                              text_severity[1][1])
+                        for id in telems[telem]:
+                            self.call_from_thread(self.print_textlog, id,
+                                                  f'{text_severity[1][0]}: Disconnected',
+                                                  text_severity[1][1])
+                        del telems[telem]
+                        break
                     if rx_msg is None:
                         continue
                     rx_msg: mav2.MAVLink_message
@@ -93,9 +102,9 @@ class ArduMultiApp(App):
                             (rx_heartbeat.type == mav2.MAV_TYPE_QUADROTOR or
                             rx_heartbeat.type == mav2.MAV_TYPE_HEXAROTOR or
                             rx_heartbeat.type == mav2.MAV_TYPE_OCTOROTOR)):
-                            # Получили HEARTBEAT от нового дрона
-                            if rx_sysid not in mav_logs:
-                                self.call_from_thread(self.new_drone, rx_sysid)
+                            # Получили HEARTBEAT от нового дрона, ищем среди списков id у каждого com порта
+                            if all(rx_sysid not in id_list for id_list in telems.values()):
+                                self.call_from_thread(self.new_drone, telem, rx_sysid)
                             # Обновление Arm
                             if rx_heartbeat.base_mode & mav2.MAV_MODE_FLAG_SAFETY_ARMED:
                                 self.call_from_thread(table.update_cell, f'row_{rx_sysid}', 'arm_col', 'Armed', update_width=True)
@@ -109,7 +118,7 @@ class ArduMultiApp(App):
                                 )
                             # Обновление Mode
                             self.call_from_thread(table.update_cell, f'row_{rx_sysid}', 'mode_col', apm_copter_mode[rx_heartbeat.custom_mode], update_width=True)
-                    elif rx_sysid in mav_logs:
+                    elif any(rx_sysid in id_list for id_list in telems.values()):
                         if rx_msg.get_msgId() == mav2.MAVLINK_MSG_ID_SYS_STATUS:
                             rx_stat: mav2.MAVLink_sys_status_message = rx_msg
                             # Обновление Batt Volt
@@ -126,8 +135,8 @@ class ArduMultiApp(App):
                             rx_text: mav2.MAVLink_statustext_message = rx_msg
                             # TODO: Как-то проверить текст из нескольких чанков
                             self.call_from_thread(self.print_textlog, rx_sysid,
-                                                f'{text_severity[rx_text.severity][0]}: {rx_text.text}',
-                                                text_severity[rx_text.severity][1])
+                                                  f'{text_severity[rx_text.severity][0]}: {rx_text.text}',
+                                                  text_severity[rx_text.severity][1])
                         else: # Неизвестное сообщение
                             # XXX: Раскомментировать для дебага
                             # self.call_from_thread(self.print_textlog, rx_sysid, f'Message {rx_msg.get_type()} received')
@@ -138,10 +147,13 @@ class ArduMultiApp(App):
                     #                       text_severity[i % len(text_severity)][1])
                     # i += 1
                     # time.sleep(1)
-            except Exception:
+            except Exception as e:
+                self.call_from_thread(self.print_textlog, None,
+                                      f'{text_severity[0][0]}: App Failure ({e})',
+                                      text_severity[0][1])
                 return
 
-    def new_drone(self, id):
+    def new_drone(self, telem, id):
         # Строка в таблице
         table = self.query_one('#table_log', DataTable)
         table.add_row(*('-', '-', '-', '-', '-', '-'), key = f'row_{id}', label = f'Drone {id}')
@@ -151,21 +163,21 @@ class ArduMultiApp(App):
         tabs = self.query_one('#tabbed_textlog', TabbedContent)
         tabs.add_pane(new_tab)
         # Добавление ID в словарь
-        mav_logs[id] = {}
+        telems[telem].append(id)
 
     def print_textlog(self, id, text: str, style: str=''):
         prefix = time.strftime('[%H:%M:%S]', time.localtime())
         if id:
-            prefix += f' [Drone {id}]'
             textlog = self.query_one(f'#textlog_{id}', RichLog)
             textlog.write(Text(f'{prefix} {text}', style=style))
+            prefix += f' [Drone {id}]'
         textlog = self.query_one('#textlog_all', RichLog)
         textlog.write(Text(f'{prefix} {text}', style=style))
 
 def com_parse(arg):
     try:
         port, baudrate = arg.split(':')
-        return (port, int(baudrate))
+        return (port.upper(), int(baudrate))
     except:
         raise argparse.ArgumentTypeError(f'[{arg}] use format PORT:BAUDRATE')
 
@@ -177,16 +189,16 @@ if __name__ == '__main__':
                         metavar='PORT:BAUDRATE',
                         required=True)
     args = parser.parse_args()
-    # Удаление повторений, если есть
+    # Удаление повторений, если есть (Уже не нужно, есть словарь)
     ports_dict = dict(args.port) if args.port else {}
 
     try:
         for port, baud in ports_dict.items():
-            telems.append(mavutil.mavlink_connection(port, baud=baud))
+            telems[mavutil.mavlink_connection(port, baud)] = []
         app = ArduMultiApp()
         app.run()
     except Exception as e:
         print(parser.format_usage(), end='')
-        print(f'error: {e}')
+        print(f'ERROR: {e}')
     finally:
         pass
