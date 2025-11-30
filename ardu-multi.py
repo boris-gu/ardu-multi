@@ -27,7 +27,7 @@ all_sev = (('EMERGENCY', 'white on #8D0638'),
            ('NOTICE',    'white on #B36800'),
            ('INFO',      'reverse'),
            ('DEBUG',     'reverse'),
-           ('APP DEBUG',      'reverse'))
+           ('APP DEBUG', 'reverse'))
 
 # {com_ports:[drone_id]}
 telems: dict[mavutil.mavserial, list[int]] = {}
