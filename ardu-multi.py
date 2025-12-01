@@ -10,7 +10,7 @@ from textual.widgets import Header, Footer, DataTable, TabbedContent, TabPane, R
 from textual.worker import get_current_worker
 from rich.text import Text
 
-DEBUG = False
+DEBUG = True
 
 apm_copter_mode = ('Stabilize',    'Acro',            'AltHold',  'Auto',   'Guided',
                    'Loiter',       'RTL',             'Circle',   '???',    'Land',
@@ -19,20 +19,19 @@ apm_copter_mode = ('Stabilize',    'Acro',            'AltHold',  'Auto',   'Gui
                    'Guided_NoGPS', 'Smart_RTL',       'FlowHold', 'Follow', 'ZigZag',
                    'SystemID',     'Heli_Autorotate', 'Auto RTL', 'Turtle')
 
-all_sev = (('EMERGENCY', 'white on #8D0638'),
-           ('ALERT',     'white on #8D0638'),
-           ('CRITICAL',  'white on #8D0638'),
-           ('ERROR',     'white on #8D0638'),
-           ('WARNING',   'white on #B36800'),
-           ('NOTICE',    'white on #B36800'),
-           ('INFO',      'reverse'),
-           ('DEBUG',     'reverse'),
-           ('APP DEBUG', 'reverse'))
+all_sev = ('[white on #8D0638] EMERGENCY [/]',
+           '[white on #8D0638] ALERT [/]',
+           '[white on #8D0638] CRITICAL [/]',
+           '[white on #8D0638] ERROR [/]', 
+           '[white on #B36800] WARNING [/]',
+           '[white on #B36800] NOTICE [/]',
+           '[reverse] INFO [/]',
+           '[reverse] DEBUG [/]',
+           '[reverse] APP [/]',
+           '[reverse #575757] DEBUG APP [/]')
 
 # {com_ports:[drone_id]}
 telems: dict[mavutil.mavserial, list[int]] = {}
-# telems: list[mavutil.mavserial] = []
-mav_logs = {}
 
 class ArduMultiApp(App):
     CSS_PATH = 'style.tcss'
@@ -155,13 +154,14 @@ class ArduMultiApp(App):
         telems[telem].append(id)
 
     def print_textlog(self, text: str, severity=-1, id=None):
-        prefix = time.strftime('[%H:%M:%S]', time.localtime())
+        prefix = time.strftime('[%H:%M:%S] ', time.localtime())
+        prefix += all_sev[severity]
         if id:
             textlog = self.query_one(f'#textlog_{id}', RichLog)
-            textlog.write(Text.from_markup(f'{prefix} [{all_sev[severity][1]}] {all_sev[severity][0]} [/] {text}'))
+            textlog.write(Text.from_markup(f'{prefix} {text}'))
             prefix += f' [Drone {id}]'
         textlog = self.query_one('#textlog_all', RichLog)
-        textlog.write(Text.from_markup(f'{prefix} [{all_sev[severity][1]}] {all_sev[severity][0]} [/] {text}'))
+        textlog.write(Text.from_markup(f'{prefix} {text}'))
 
 def com_parse(arg):
     try:
