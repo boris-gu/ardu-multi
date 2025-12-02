@@ -19,15 +19,15 @@ apm_copter_mode = ('Stabilize',    'Acro',            'AltHold',  'Auto',   'Gui
                    'Guided_NoGPS', 'Smart_RTL',       'FlowHold', 'Follow', 'ZigZag',
                    'SystemID',     'Heli_Autorotate', 'Auto RTL', 'Turtle')
 
-all_sev = (' [white on #8D0638] EMER [/]',
+all_sev = ('[white on #8D0638] EMER [/] ',
            '[white on #8D0638] ALERT [/]',
-           ' [white on #8D0638] CRIT [/]',
+           '[white on #8D0638] CRIT [/] ',
            '[white on #8D0638] ERROR [/]', 
-           ' [white on #B36800] WARN [/]',
-           ' [white on #B36800] NOTE [/]',
-                    ' [reverse] INFO [/]',
+           '[white on #B36800] WARN [/] ',
+           '[white on #B36800] NOTE [/] ',
+                    '[reverse] INFO [/] ',
                     '[reverse] DEBUG [/]',
-            '  [reverse #575757] APP [/]',
+            '[reverse #575757] APP [/]  ',
             '       ')
 
 # {com_ports:[drone_id]}
@@ -116,6 +116,14 @@ class ArduMultiApp(App):
                                             1000000, # param2: Interval in microseconds
                                             0, 0, 0, 0, 0)
         telem.mav.send(msg)
+        # msg = telem.mav.command_long_encode(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
+        #                                     mav2.MAV_CMD_IMAGE_START_CAPTURE,  # ID of command to send
+        #                                     0,  # Confirmation
+        #                                     0, # ID камеры
+        #                                     0.1, # Интервал в сек
+        #                                     0, # Кол-во фото
+        #                                     0, 0, 0, 0)
+        # telem.mav.send(msg)
         
     # ------------
     # Чтение UART
