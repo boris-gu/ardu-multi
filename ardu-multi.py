@@ -5,12 +5,15 @@ from pymavlink import mavutil
 from pymavlink.dialects.v20 import ardupilotmega as mav2
 from textual import work
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
-from textual.widgets import Header, Footer, DataTable, TabbedContent, TabPane, RichLog
 from textual.worker import get_current_worker
+from textual.containers import Container, Horizontal, Vertical
+from textual.widgets import Header, Footer, DataTable
+from textual.widgets import TabbedContent, TabPane, RichLog
+from textual.widgets import Button, SelectionList
+from textual.widgets.selection_list import Selection
 from rich.text import Text
 
-DEBUG = True
+DEBUG = False
 
 apm_copter_mode = ('Stabilize',    'Acro',            'AltHold',  'Auto',   'Guided',
                    'Loiter',       'RTL',             'Circle',   '???',    'Land',
@@ -51,14 +54,21 @@ class ArduMultiApp(App):
                           ('Altitude', 'alt_col'))
         tabs = TabbedContent(id='tabbed_textlog', classes='big_block')
         tabs.border_title = 'STATUSTEXT'
+        act_cont = Container(id='container_actions', classes='big_block')
+        act_cont.border_title = 'ACTIONS'
+        drone_select_list = SelectionList(id='sel_drones', compact=False)
 
         yield Header()
         yield Footer()
-        with Vertical():
-            yield table
-            with tabs:
-                with TabPane("All", id='tab_all'):
-                    yield RichLog(id='textlog_all')
+        with Horizontal():
+            with Vertical():
+                yield table
+                with tabs:
+                    with TabPane("All", id='tab_all'):
+                        yield RichLog(id='textlog_all')
+            with act_cont:
+                yield Button('Start mission', variant="primary")
+                yield drone_select_list
 
     def on_mount(self) -> None:
         self.uart_rx()
@@ -90,6 +100,10 @@ class ArduMultiApp(App):
         new_tab = TabPane(f'Drone {id}', new_textlog, id=f'tab_{id}')
         tabs = self.query_one('#tabbed_textlog', TabbedContent)
         tabs.add_pane(new_tab)
+        # Список во вкладке ACTIONS
+        sel_list = self.query_one('#sel_drones', SelectionList)
+        # TODO: Убрать цикл после отладки
+        sel_list.add_option(Selection(f'Drone {id}', id, id=f'sel_{id}'))
         # Добавление ID в словарь
         telems[telem].append(id)
 
@@ -101,6 +115,7 @@ class ArduMultiApp(App):
         if not telem:
             return False
         # SYS_STATUS
+        self.call_from_thread(self.print_textlog, 'SET_MESSAGE_INTERVAL SYS_STATUS', -2, id)
         msg = telem.mav.command_long_encode(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
                                             mav2.MAV_CMD_SET_MESSAGE_INTERVAL,  # ID of command to send
                                             0,  # Confirmation
@@ -108,7 +123,8 @@ class ArduMultiApp(App):
                                             1000000, # param2: Interval in microseconds
                                             0, 0, 0, 0, 0)
         telem.mav.send(msg)
-        # GLOBAL_POSITION_INT 
+        # GLOBAL_POSITION_INT
+        self.call_from_thread(self.print_textlog, 'SET_MESSAGE_INTERVAL GLOBAL_POSITION_INT', -2, id)
         msg = telem.mav.command_long_encode(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
                                             mav2.MAV_CMD_SET_MESSAGE_INTERVAL,  # ID of command to send
                                             0,  # Confirmation
@@ -145,9 +161,17 @@ class ArduMultiApp(App):
                         rx_msg = telem.recv_match(blocking=False)
                     except (serial.SerialException, serial.SerialTimeoutException):
                         self.call_from_thread(self.print_textlog, f'{telem.port.name} Disconnected', 8)
+                        sel_list = self.query_one('#sel_drones', SelectionList)
                         for id in telems[telem]:
+                            sel_drone = sel_list.get_option(f'sel_{id}')
+                            sel_drone.disabled = True
+                            sel_list.deselect(sel_drone)
                             self.call_from_thread(self.print_textlog, f'Disconnected', 8, id)
+                            # Т.к. рендер SelectionList не обновляется, если deselect не сработал (пункт не выбран изначально)
+                            sel_list.refresh()
                         del telems[telem]
+                        if len(telems) == 0: # Иначе у программы инпут лаг
+                            return
                         break
                     if rx_msg is None:
                         continue

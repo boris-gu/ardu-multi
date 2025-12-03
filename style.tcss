@@ -5,6 +5,7 @@
 
 Vertical {
     height: 100%;
+    width: 2fr;
     overflow: hidden;
 }
 
@@ -22,4 +23,23 @@ Vertical {
 RichLog {
     overflow: auto;
     margin: 0 0 0 1;
+}
+
+#container_actions {
+    overflow: auto;
+    margin: 0 0 0 1;
+    padding: 1 3 1 3;
+    height: 100%;
+    width: 1fr;
+}
+
+
+Button {
+    margin: 0 0 1 0;
+    width: 100%;
+}
+
+SelectionList {
+    height: 1fr;
+    border: blank; # Иначе рисуется при фокусировке. На самом деле есть и в фокусе, но рисуется иначе
 }
