@@ -1,3 +1,6 @@
+from dataclasses import dataclass, field
+from queue import Queue, Empty
+import copy
 import argparse
 import serial
 import time
@@ -14,6 +17,7 @@ from textual.widgets.selection_list import Selection
 from rich.text import Text
 
 DEBUG = False
+sec2ns = 1000000000
 
 apm_copter_mode = ('Stabilize',    'Acro',            'AltHold',  'Auto',   'Guided',
                    'Loiter',       'RTL',             'Circle',   '???',    'Land',
@@ -34,8 +38,14 @@ all_sev = ('[white on #8D0638] EMER [/] ',
             '       ')
 
 # {com_ports:[drone_id]}
-telems: dict[mavutil.mavserial, list[int]] = {}
-queue_tx = []
+telems: dict[mavutil.mavserial, Telem_data] = {}
+
+@dataclass
+class Telem_data:
+    ids: list[int] = field(default_factory=list)
+    fifo_tx: Queue = field(default_factory=Queue)
+    fifo_rx_all: dict[str, Queue] = field(default_factory=dict)
+
 
 class ArduMultiApp(App):
     CSS_PATH = 'style.tcss'
@@ -72,6 +82,8 @@ class ArduMultiApp(App):
 
     def on_mount(self) -> None:
         self.uart_rx()
+        for telem in telems:
+            self.uart_tx(telem)
 
     def action_toggle_dark(self) -> None:
         self.theme = (
@@ -105,33 +117,44 @@ class ArduMultiApp(App):
         # TODO: Убрать цикл после отладки
         sel_list.add_option(Selection(f'Drone {id}', id, id=f'sel_{id}'))
         # Добавление ID в словарь
-        telems[telem].append(id)
+        telems[telem].ids.append(id)
 
     def find_telem(self, id):
-        return next((port for port, ids in telems.items() if id in ids), None)
-    
+        return next((port for port, port_data in telems.items() if id in port_data.ids), None)
+
     def mav_request_log(self, id):
         telem = self.find_telem(id)
         if not telem:
             return False
         # SYS_STATUS
         self.call_from_thread(self.print_textlog, 'SET_MESSAGE_INTERVAL SYS_STATUS', -2, id)
-        msg = telem.mav.command_long_encode(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
-                                            mav2.MAV_CMD_SET_MESSAGE_INTERVAL,  # ID of command to send
-                                            0,  # Confirmation
-                                            mav2.MAVLINK_MSG_ID_SYS_STATUS,  # param1: Message ID to be streamed
-                                            1000000, # param2: Interval in microseconds
-                                            0, 0, 0, 0, 0)
-        telem.mav.send(msg)
+
+        self.prot_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
+                               mav2.MAV_CMD_SET_MESSAGE_INTERVAL,  # ID of command to send
+                               0,  # Confirmation
+                               mav2.MAVLINK_MSG_ID_SYS_STATUS,  # param1: Message ID to be streamed
+                               1000000, # param2: Interval in microseconds
+                               0, 0, 0, 0, 0)
+        # msg = telem.mav.command_long_encode(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
+        #                                     mav2.MAV_CMD_SET_MESSAGE_INTERVAL,  # ID of command to send
+        #                                     0,  # Confirmation
+        #                                     mav2.MAVLINK_MSG_ID_SYS_STATUS,  # param1: Message ID to be streamed
+        #                                     1000000, # param2: Interval in microseconds
+        #                                     0, 0, 0, 0, 0)
+        # telems[telem].fifo_tx.put(msg)
+        # telem.mav.send(msg)
         # GLOBAL_POSITION_INT
-        self.call_from_thread(self.print_textlog, 'SET_MESSAGE_INTERVAL GLOBAL_POSITION_INT', -2, id)
-        msg = telem.mav.command_long_encode(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
-                                            mav2.MAV_CMD_SET_MESSAGE_INTERVAL,  # ID of command to send
-                                            0,  # Confirmation
-                                            mav2.MAVLINK_MSG_ID_GLOBAL_POSITION_INT,  # param1: Message ID to be streamed
-                                            1000000, # param2: Interval in microseconds
-                                            0, 0, 0, 0, 0)
-        telem.mav.send(msg)
+
+        # self.call_from_thread(self.print_textlog, 'SET_MESSAGE_INTERVAL GLOBAL_POSITION_INT', -2, id)
+        # msg = telem.mav.command_long_encode(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
+        #                                     mav2.MAV_CMD_SET_MESSAGE_INTERVAL,  # ID of command to send
+        #                                     0,  # Confirmation
+        #                                     mav2.MAVLINK_MSG_ID_GLOBAL_POSITION_INT,  # param1: Message ID to be streamed
+        #                                     1000000, # param2: Interval in microseconds
+        #                                     0, 0, 0, 0, 0)
+        # telems[telem].fifo_tx.put(msg)
+
+        # telem.mav.send(msg)
         # msg = telem.mav.command_long_encode(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
         #                                     mav2.MAV_CMD_IMAGE_START_CAPTURE,  # ID of command to send
         #                                     0,  # Confirmation
@@ -140,11 +163,11 @@ class ArduMultiApp(App):
         #                                     0, # Кол-во фото
         #                                     0, 0, 0, 0)
         # telem.mav.send(msg)
-        
+
     # ------------
     # Чтение UART
     # ------------
-    @work(exclusive=True, thread=True)
+    @work(thread=True)
     def uart_rx(self):
         worker = get_current_worker()
         table = self.query_one('#table_log', DataTable)
@@ -152,17 +175,15 @@ class ArduMultiApp(App):
         if DEBUG:
             for i in range(len(all_sev)):
                 self.call_from_thread(self.print_textlog, 'Lorem ipsum dolor', i)
-        while True:
-            if worker.is_cancelled:
-                return
+        while worker.is_running:
             try:
                 for telem in telems:
                     try: # Ловим, если порт был отключен
-                        rx_msg = telem.recv_match(blocking=False)
+                        msg_rx = telem.recv_match(blocking=False)
                     except (serial.SerialException, serial.SerialTimeoutException):
                         self.call_from_thread(self.print_textlog, f'{telem.port.name} Disconnected', 8)
                         sel_list = self.query_one('#sel_drones', SelectionList)
-                        for id in telems[telem]:
+                        for id in telems[telem].ids:
                             sel_drone = sel_list.get_option(f'sel_{id}')
                             sel_drone.disabled = True
                             sel_list.deselect(sel_drone)
@@ -173,19 +194,21 @@ class ArduMultiApp(App):
                         if len(telems) == 0: # Иначе у программы инпут лаг
                             return
                         break
-                    if rx_msg is None:
+                    if msg_rx is None:
                         continue
-                    rx_msg: mav2.MAVLink_message
-                    rx_sysid = rx_msg.get_srcSystem()
+                    for fifo_rx in telems[telem].fifo_rx_all.values():
+                        fifo_rx.put(msg_rx)
+                    msg_rx: mav2.MAVLink_message
+                    rx_sysid = msg_rx.get_srcSystem()
                     # Проверка на HEARTBEAT отличается от других сообщений т.к. по нему находим новые дроны
-                    if rx_msg.get_msgId() == mav2.MAVLINK_MSG_ID_HEARTBEAT:
-                        rx_heartbeat: mav2.MAVLink_heartbeat_message = rx_msg
+                    if msg_rx.get_msgId() == mav2.MAVLINK_MSG_ID_HEARTBEAT:
+                        rx_heartbeat: mav2.MAVLink_heartbeat_message = msg_rx
                         if (rx_heartbeat.autopilot == mav2.MAV_AUTOPILOT_ARDUPILOTMEGA and
                             (rx_heartbeat.type == mav2.MAV_TYPE_QUADROTOR or
                             rx_heartbeat.type == mav2.MAV_TYPE_HEXAROTOR or
                             rx_heartbeat.type == mav2.MAV_TYPE_OCTOROTOR)):
                             # Получили HEARTBEAT от нового дрона, ищем среди списков id у каждого com порта
-                            if all(rx_sysid not in id_list for id_list in telems.values()):
+                            if all(rx_sysid not in telem_data.ids for telem_data in telems.values()):
                                 self.call_from_thread(self.new_drone, rx_sysid, telem)
                                 self.mav_request_log(rx_sysid)
                             # Обновление Arm
@@ -201,39 +224,94 @@ class ArduMultiApp(App):
                                 )
                             # Обновление Mode
                             self.call_from_thread(table.update_cell, f'row_{rx_sysid}', 'mode_col', apm_copter_mode[rx_heartbeat.custom_mode], update_width=True)
-                    elif any(rx_sysid in id_list for id_list in telems.values()):
-                        rx_msg_id = rx_msg.get_msgId()
-                        if rx_msg_id == mav2.MAVLINK_MSG_ID_SYS_STATUS:
-                            rx_stat: mav2.MAVLink_sys_status_message = rx_msg
+                    elif any(rx_sysid in telem_data.ids for telem_data in telems.values()): # TODO: Не уверен
+                        msg_rx_id = msg_rx.get_msgId()
+                        if msg_rx_id == mav2.MAVLINK_MSG_ID_SYS_STATUS:
+                            rx_stat: mav2.MAVLink_sys_status_message = msg_rx
                             # Обновление Batt Volt
                             self.call_from_thread(table.update_cell, f'row_{rx_sysid}', 'bat_col', f'{(rx_stat.voltage_battery / 1000):.2f}', update_width=True)
-                        elif rx_msg_id == mav2.MAVLINK_MSG_ID_GLOBAL_POSITION_INT:
-                            rx_gpos: mav2.MAVLink_global_position_int_message = rx_msg
+                        elif msg_rx_id == mav2.MAVLINK_MSG_ID_GLOBAL_POSITION_INT:
+                            rx_gpos: mav2.MAVLink_global_position_int_message = msg_rx
                             # Обновление Latitude
                             self.call_from_thread(table.update_cell, f'row_{rx_sysid}', 'lat_col', f'{rx_gpos.lat / 10000000}', update_width=True)
                             # Обновление Longitude
                             self.call_from_thread(table.update_cell, f'row_{rx_sysid}', 'lon_col', f'{rx_gpos.lon / 10000000}', update_width=True)
                             # Обновление Altitude
                             self.call_from_thread(table.update_cell, f'row_{rx_sysid}', 'alt_col', f'{(rx_gpos.relative_alt / 1000):.2f}', update_width=True)
-                        elif rx_msg_id == mav2.MAVLINK_MSG_ID_STATUSTEXT:
-                            rx_text: mav2.MAVLink_statustext_message = rx_msg
+                        elif msg_rx_id == mav2.MAVLINK_MSG_ID_STATUSTEXT:
+                            rx_text: mav2.MAVLink_statustext_message = msg_rx
                             # TODO: Как-то проверить текст из нескольких чанков
                             self.call_from_thread(self.print_textlog, rx_text.text, rx_text.severity, rx_sysid)
-                        elif rx_msg_id == mav2.MAVLINK_MSG_ID_COMMAND_ACK:
-                            rx_cmd_ack: mav2.MAVLink_command_ack_message = rx_msg
-                            self.call_from_thread(self.print_textlog, f'ACK: cmd: {rx_cmd_ack.command} result: {rx_cmd_ack.result}', None, rx_sysid)
-                        elif rx_msg_id == mav2.MAVLINK_MSG_ID_PARAM_VALUE:
-                            rx_param_val: mav2.MAVLink_param_value_message = rx_msg
+                        # elif msg_rx_id == mav2.MAVLINK_MSG_ID_COMMAND_ACK:
+                        #     rx_cmd_ack: mav2.MAVLink_command_ack_message = msg_rx
+                        #     self.call_from_thread(self.print_textlog, f'ACK: cmd: {rx_cmd_ack.command} result: {rx_cmd_ack.result}', None, rx_sysid)
+                        elif msg_rx_id == mav2.MAVLINK_MSG_ID_PARAM_VALUE:
+                            rx_param_val: mav2.MAVLink_param_value_message = msg_rx
                             self.call_from_thread(self.print_textlog, f'PARAM_VALUE: id: {rx_param_val.param_id}', None, rx_sysid)
                         else:
-                            self.call_from_thread(self.print_textlog, f'Message {rx_msg.get_type()} received', None, rx_sysid)
+                            self.call_from_thread(self.print_textlog, f'Message {msg_rx.get_type()} received', None, rx_sysid)
             except Exception as e:
                 self.call_from_thread(self.print_textlog, f'App Failure ({e})', 0)
                 return
 
-    @work(exclusive=True, thread=True)
-    def uart_tx(self):
-        pass
+    @work(thread=True)
+    def uart_tx(self, telem):
+        worker = get_current_worker()
+        last_hb = time.time_ns()
+        while worker.is_running and (telem in telems):
+            mav_tx: mav2.MAVLink = telem.mav
+            if time.time_ns() - last_hb >= sec2ns:
+                last_hb += sec2ns
+                mav_tx.heartbeat_send(mav2.MAV_TYPE_GCS, mav2.MAV_AUTOPILOT_INVALID, 0, 0, 0)
+            try:
+                mav_tx.send(telems[telem].fifo_tx.get(block=False)) # TODO: Проверить
+                self.call_from_thread(self.print_textlog, f'SEND', -2)
+            except Empty:
+                pass
+            time.sleep(0.05) # Иначе виснет рендер
+
+    # TODO: Дописать протокол
+    @work(thread=True)
+    def prot_command_long(self,
+                          target_system: int,
+                          target_component: int,
+                          command: int,
+                          confirmation: int,
+                          param1: float,
+                          param2: float,
+                          param3: float,
+                          param4: float,
+                          param5: float,
+                          param6: float,
+                          param7: float):
+        worker = get_current_worker()
+        # TODO: Проверять телему
+        telem = self.find_telem(target_system)
+        mav_tx: mav2.MAVLink = telem.mav
+
+        this_fifo = Queue() # Создаем FIFO
+        telems[telem].fifo_rx_all[f'command_long_{target_system}'] = this_fifo # Записываем в словарь всех FIFO
+        # Отправляем сообщение с командой
+        msg_tx = mav_tx.command_long_encode(target_system, target_component, command, confirmation,
+                                            param1, param2, param3, param4, param5, param6, param7)
+        telems[telem].fifo_tx.put(msg_tx)
+        # Ждем ответ
+        start_wait = time.time_ns()
+        while  (worker.is_running and
+                (telem in telems) and
+                (time.time_ns() - start_wait <= sec2ns)):
+            try:
+                msg_rx: mav2.MAVLink_message = this_fifo.get(timeout=1)
+                rx_sysid = msg_rx.get_srcSystem()
+                if rx_sysid == target_system and msg_rx.get_msgId() == mav2.MAVLINK_MSG_ID_COMMAND_ACK:
+                    rx_cmd_ack: mav2.MAVLink_command_ack_message = msg_rx
+                    if rx_cmd_ack.command == command:
+                        self.call_from_thread(self.print_textlog, f'ACK: cmd: {rx_cmd_ack.command} result: {rx_cmd_ack.result}', None, rx_sysid)
+                        break
+            except Empty:
+                pass
+        del telems[telem].fifo_rx_all[f'command_long_{target_system}']
+
 
 def com_parse(arg):
     try:
@@ -241,7 +319,7 @@ def com_parse(arg):
         return (port.upper(), int(baudrate))
     except:
         raise argparse.ArgumentTypeError(f'[{arg}] use format PORT:BAUDRATE')
-    
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -256,7 +334,7 @@ if __name__ == '__main__':
 
     try:
         for port, baud in ports_dict.items():
-            telems[mavutil.mavlink_connection(port, baud)] = []
+            telems[mavutil.mavlink_connection(port, baud)] = Telem_data()
         app = ArduMultiApp()
         app.run()
     except Exception as e:
