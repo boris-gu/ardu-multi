@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from queue import Queue, Empty
-import copy
+import threading
 import argparse
 import serial
 import time
@@ -45,6 +45,7 @@ class Telem_data:
     ids: list[int] = field(default_factory=list)
     fifo_tx: Queue = field(default_factory=Queue)
     fifo_rx_all: dict[str, Queue] = field(default_factory=dict)
+    fifo_rx_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class ArduMultiApp(App):
@@ -138,8 +139,9 @@ class ArduMultiApp(App):
                         break
                     if msg_rx is None:
                         continue
-                    for fifo_rx in telems[telem].fifo_rx_all.values():
-                        fifo_rx.put(msg_rx)
+                    with telems[telem].fifo_rx_lock:
+                        for fifo_rx in telems[telem].fifo_rx_all.values():
+                            fifo_rx.put(msg_rx)
                     msg_rx: mav2.MAVLink_message
                     rx_sysid = msg_rx.get_srcSystem()
                     # Проверка на HEARTBEAT отличается от других сообщений т.к. по нему находим новые дроны
@@ -187,7 +189,7 @@ class ArduMultiApp(App):
                             rx_cmd_ack: mav2.MAVLink_command_ack_message = msg_rx
                             self.call_from_thread(self.print_textlog, f'Received ACK: cmd: {rx_cmd_ack.command} result: {rx_cmd_ack.result}', None, rx_sysid)
                         else:
-                            self.call_from_thread(self.print_textlog, f'Received Message {msg_rx.get_type()}', None, rx_sysid)
+                            self.call_from_thread(self.print_textlog, f'Received {msg_rx.get_type()}', None, rx_sysid)
             except Exception as e:
                 self.call_from_thread(self.print_textlog, f'App Failure ({e})', 0)
                 return
@@ -208,24 +210,23 @@ class ArduMultiApp(App):
                 pass
             time.sleep(0.05) # Иначе виснет рендер
 
-    @work(thread=True)
     def task_add_new_drone(self, id, telem):
         # Строка в таблице
         table = self.query_one('#table_log', DataTable)
-        self.call_from_thread(table.add_row, *('-', '-', '-', '-', '-', '-'), key = f'row_{id}', label = f'Drone {id}')
+        table.add_row(*('-', '-', '-', '-', '-', '-'), key = f'row_{id}', label = f'Drone {id}')
         # Вкладка STATUSTEXT
         new_textlog = RichLog(id=f'textlog_{id}')
         new_tab = TabPane(f'Drone {id}', new_textlog, id=f'tab_{id}')
         tabs = self.query_one('#tabbed_textlog', TabbedContent)
-        self.call_from_thread(tabs.add_pane, new_tab)
+        tabs.add_pane(new_tab)
         # Список во вкладке ACTIONS
         sel_list = self.query_one('#sel_drones', SelectionList)
-        self.call_from_thread(sel_list.add_option, Selection(f'Drone {id}', id, id=f'sel_{id}'))
+        sel_list.add_option(Selection(f'Drone {id}', id, id=f'sel_{id}'))
         # Добавление ID в словарь
         telems[telem].ids.append(id)
         # Запрос логов
         # SYS_STATUS
-        self.call_from_thread(self.print_textlog, 'SET_MESSAGE_INTERVAL SYS_STATUS', -2, id)
+        self.print_textlog('Send SET_MESSAGE_INTERVAL SYS_STATUS', -2, id)
         self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
                                    mav2.MAV_CMD_SET_MESSAGE_INTERVAL,  # ID of command to send
                                    0,  # Confirmation
@@ -233,7 +234,7 @@ class ArduMultiApp(App):
                                    1000000, # param2: Interval in microseconds
                                    0, 0, 0, 0, 0)
         # GLOBAL_POSITION_INT
-        self.call_from_thread(self.print_textlog, 'SET_MESSAGE_INTERVAL GLOBAL_POSITION_INT', -2, id)
+        self.print_textlog('Send SET_MESSAGE_INTERVAL GLOBAL_POSITION_INT', -2, id)
         self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,
                                    mav2.MAV_CMD_SET_MESSAGE_INTERVAL,
                                    0,  # Confirmation
@@ -261,7 +262,10 @@ class ArduMultiApp(App):
         # Проверяем, есть ли уже эта очередь в словаре (уже вызвали у этого дрона)
         # Есть - ждем освобождения
         # Нет - добавляем очередь в словарь всех FIFO
-        while telems[telem].fifo_rx_all.setdefault(f'command_long_{target_system}', this_fifo) is not this_fifo:
+        while True: 
+            with telems[telem].fifo_rx_lock:
+                if telems[telem].fifo_rx_all.setdefault(f'command_long_{target_system}', this_fifo) is this_fifo:
+                    break
             time.sleep(0.1)
         # Отправляем сообщение с командой
         msg_tx = mav_tx.command_long_encode(target_system, target_component, command, confirmation,
@@ -284,11 +288,13 @@ class ArduMultiApp(App):
                             if rx_cmd_ack.result == mav2.MAV_RESULT_IN_PROGRESS:
                                 start_wait = time.time_ns()
                             else:
-                                del telems[telem].fifo_rx_all[f'command_long_{target_system}']
+                                with telems[telem].fifo_rx_lock:
+                                    del telems[telem].fifo_rx_all[f'command_long_{target_system}']
                                 return
                 except Empty:
                     pass
-        del telems[telem].fifo_rx_all[f'command_long_{target_system}']
+        with telems[telem].fifo_rx_lock:
+            del telems[telem].fifo_rx_all[f'command_long_{target_system}']
 
 
 def com_parse(arg):
