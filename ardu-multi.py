@@ -16,7 +16,6 @@ from textual.widgets import Button, SelectionList
 from textual.widgets.selection_list import Selection
 from rich.text import Text
 
-DEBUG = False
 sec2ns = 1000000000
 
 apm_arm_status = ('DISARM', 'ARM')
@@ -116,7 +115,7 @@ class ArduMultiApp(App):
     def uart_rx(self):
         worker = get_current_worker()
         table = self.query_one('#table_log', DataTable)
-        # if DEBUG:
+        # if args.debug:
         #     for i in range(len(all_sev)):
         #         self.call_from_thread(self.print_textlog, 'Lorem ipsum dolor', i)
         # Обновление данных
@@ -183,12 +182,12 @@ class ArduMultiApp(App):
                         elif msg_rx_id == mav2.MAVLINK_MSG_ID_COMMAND_ACK:
                             rx_cmd_ack: mav2.MAVLink_command_ack_message = msg_rx
                             drones[rx_sysid].cmd_ack = rx_cmd_ack
-                            if DEBUG:
+                            if args.debug:
                                 cmd_str = mav2.enums['MAV_CMD'][rx_cmd_ack.command].name.replace('MAV_CMD_', '')
                                 cmd_result_str = mav2.enums['MAV_RESULT'][rx_cmd_ack.result].name.replace('MAV_RESULT_', '')
                                 self.call_from_thread(self.print_textlog, f'Received ACK: cmd: [b]{cmd_str}[/] result: [b]{cmd_result_str}[/]', None, rx_sysid)
                         else:
-                            if DEBUG:
+                            if args.debug:
                                 self.call_from_thread(self.print_textlog, f'Received [b]{msg_rx.get_type()}[/]', None, rx_sysid)
             except Exception as e:
                 self.call_from_thread(self.print_textlog, f'App Failure ({e})', 0)
@@ -229,7 +228,7 @@ class ArduMultiApp(App):
         drones[id] = Drone_data()
         # Запрос логов
         # SYS_STATUS
-        if DEBUG:
+        if args.debug:
             self.print_textlog('Send [b]SET_MESSAGE_INTERVAL[/] msg: [b]SYS_STATUS[/]', -2, id)
         self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
                                    mav2.MAV_CMD_SET_MESSAGE_INTERVAL,  # ID of command to send
@@ -237,14 +236,14 @@ class ArduMultiApp(App):
                                    mav2.MAVLINK_MSG_ID_SYS_STATUS,  # param1: Message ID to be streamed
                                    1000000) # param2: Interval in microseconds
         # GLOBAL_POSITION_INT
-        if DEBUG:
+        if args.debug:
             self.print_textlog('Send [b]SET_MESSAGE_INTERVAL[/] msg: [b]GLOBAL_POSITION_INT[/]', -2, id)
         self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,
                                    mav2.MAV_CMD_SET_MESSAGE_INTERVAL,
                                    0,  # Confirmation
                                    mav2.MAVLINK_MSG_ID_GLOBAL_POSITION_INT,
                                    1000000)
-        
+
     def task_remove_telem(self, telem):
         # TODO: Написать
         pass
@@ -331,7 +330,7 @@ class ArduMultiApp(App):
                 self.call_from_thread(self.print_textlog, '[b]FAILED[/] Start Sission on step: [b]set AUTO[/]', -2, id)
         button.disabled = False
         sel_list.disabled = False
-        
+
     @work(thread=True)
     def protocol_command_long(self,
                               target_system: int,
@@ -382,11 +381,15 @@ def com_parse(arg):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('-d', '--debug',
+                        action='store_true',
+                        help='Enable debug output')
     parser.add_argument('-p', '--port',
-                        type=com_parse,
                         action='append',
-                        metavar='PORT:BAUDRATE',
-                        required=True)
+                        type=com_parse,
+                        required=True,
+                        help='COM port with MAVLink telemetry',
+                        metavar='PORT:BAUDRATE')
     args = parser.parse_args()
     # Удаление повторений, если есть (Уже не нужно, есть словарь)
     ports_dict = dict(args.port) if args.port else {}
