@@ -6,7 +6,7 @@ import serial
 import time
 from pymavlink import mavutil
 from pymavlink.dialects.v20 import ardupilotmega as mav2
-from textual import work
+from textual import work, on
 from textual.app import App, ComposeResult
 from textual.worker import get_current_worker
 from textual.containers import Container, Horizontal, Vertical
@@ -78,7 +78,7 @@ class ArduMultiApp(App):
                     with TabPane("All", id='tab_all'):
                         yield RichLog(id='textlog_all')
             with act_cont:
-                yield Button('Start Mission', variant="primary")
+                yield Button('Start Mission', variant="primary", id='btn_start_mission')
                 yield drone_select_list
 
     def on_mount(self) -> None:
@@ -88,6 +88,10 @@ class ArduMultiApp(App):
 
     def action_toggle_dark(self) -> None:
         self.theme = ('textual-dark' if self.theme == 'textual-light' else 'textual-light')
+
+    @on(Button.Pressed, "#btn_start_mission")  
+    def btn_start_mission_pressed(self):
+        self.task_start_mission()
 
     def print_textlog(self, text: str, severity=None, id=None):
         prefix = time.strftime('[%H:%M:%S] ', time.localtime())
@@ -112,10 +116,10 @@ class ArduMultiApp(App):
     def uart_rx(self):
         worker = get_current_worker()
         table = self.query_one('#table_log', DataTable)
+        # if DEBUG:
+        #     for i in range(len(all_sev)):
+        #         self.call_from_thread(self.print_textlog, 'Lorem ipsum dolor', i)
         # Обновление данных
-        if DEBUG:
-            for i in range(len(all_sev)):
-                self.call_from_thread(self.print_textlog, 'Lorem ipsum dolor', i)
         while worker.is_running:
             try:
                 for telem in telems:
@@ -179,16 +183,20 @@ class ArduMultiApp(App):
                         elif msg_rx_id == mav2.MAVLINK_MSG_ID_COMMAND_ACK:
                             rx_cmd_ack: mav2.MAVLink_command_ack_message = msg_rx
                             drones[rx_sysid].cmd_ack = rx_cmd_ack
-                            cmd_str = mav2.enums['MAV_CMD'][rx_cmd_ack.command].name.replace('MAV_CMD_', '')
-                            cmd_result_str = mav2.enums['MAV_RESULT'][rx_cmd_ack.result].name.replace('MAV_RESULT_', '')
-                            self.call_from_thread(self.print_textlog, f'Received ACK: cmd: [b]{cmd_str}[/] result: [b]{cmd_result_str}[/]', None, rx_sysid)
+                            if DEBUG:
+                                cmd_str = mav2.enums['MAV_CMD'][rx_cmd_ack.command].name.replace('MAV_CMD_', '')
+                                cmd_result_str = mav2.enums['MAV_RESULT'][rx_cmd_ack.result].name.replace('MAV_RESULT_', '')
+                                self.call_from_thread(self.print_textlog, f'Received ACK: cmd: [b]{cmd_str}[/] result: [b]{cmd_result_str}[/]', None, rx_sysid)
                         else:
-                            self.call_from_thread(self.print_textlog, f'Received [b]{msg_rx.get_type()}[/]', None, rx_sysid)
+                            if DEBUG:
+                                self.call_from_thread(self.print_textlog, f'Received [b]{msg_rx.get_type()}[/]', None, rx_sysid)
             except Exception as e:
                 self.call_from_thread(self.print_textlog, f'App Failure ({e})', 0)
                 return
 
+    # ----------------------------------------
     # Отправка сообщений и Protocol Heartbeat
+    # ----------------------------------------
     @work(thread=True)
     def uart_tx(self, telem):
         worker = get_current_worker()
@@ -221,71 +229,108 @@ class ArduMultiApp(App):
         drones[id] = Drone_data()
         # Запрос логов
         # SYS_STATUS
-        self.print_textlog('Send [b]SET_MESSAGE_INTERVAL[/] msg: [b]SYS_STATUS[/]', -2, id)
+        if DEBUG:
+            self.print_textlog('Send [b]SET_MESSAGE_INTERVAL[/] msg: [b]SYS_STATUS[/]', -2, id)
         self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
                                    mav2.MAV_CMD_SET_MESSAGE_INTERVAL,  # ID of command to send
                                    0,  # Confirmation
                                    mav2.MAVLINK_MSG_ID_SYS_STATUS,  # param1: Message ID to be streamed
                                    1000000) # param2: Interval in microseconds
         # GLOBAL_POSITION_INT
-        self.print_textlog('Send [b]SET_MESSAGE_INTERVAL[/] msg: [b]GLOBAL_POSITION_INT[/]', -2, id)
+        if DEBUG:
+            self.print_textlog('Send [b]SET_MESSAGE_INTERVAL[/] msg: [b]GLOBAL_POSITION_INT[/]', -2, id)
         self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,
                                    mav2.MAV_CMD_SET_MESSAGE_INTERVAL,
                                    0,  # Confirmation
                                    mav2.MAVLINK_MSG_ID_GLOBAL_POSITION_INT,
                                    1000000)
-        self.task_start_mission(id) # TODO: УБРАТЬ
         
     def task_remove_telem(self, telem):
+        # TODO: Написать
         pass
 
     @work(thread=True)
-    def task_start_mission(self, id):
+    def task_start_mission(self):
         worker = get_current_worker()
         wait_time = 10 * sec2ns
+        button = self.query_one('#btn_start_mission', Button)
+        sel_list = self.query_one('#sel_drones', SelectionList)
+        button.disabled = True
+        sel_list.disabled = True
+        ids = sel_list.selected
+        if len(ids) == 0:
+            self.call_from_thread(self.print_textlog, '[b]FAILED[/] Start Mission: [b]No drone selected[/]', -2)
+            button.disabled = False
+            sel_list.disabled = False
+            return
+        self.call_from_thread(self.print_textlog, '[b]START MISSION[/]', -2)
         # GUIDED
-        self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
-                                   mav2.MAV_CMD_DO_SET_MODE,  # ID of command to send
-                                   0,  # Confirmation
-                                   mav2.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,  # param1: Message ID to be streamed
-                                   mav2.COPTER_MODE_GUIDED) # param2: Interval in microseconds
-        cmd_done = False
-        start_wait = time.time_ns()
-        while  (worker.is_running and (time.time_ns() - start_wait <= wait_time)):
-            if ((drones[id].heartbeat is not None) and
-                drones[id].heartbeat.custom_mode == mav2.COPTER_MODE_GUIDED):
-                cmd_done = True
-                break
-            time.sleep(0.2)
-        if not cmd_done:
-            self.call_from_thread(self.print_textlog, 'Failed Start Mission on step: set GUIDED', -2, id)
-            return
+        self.call_from_thread(self.print_textlog, 'SEND [b]GUIDED MODE[/]', -2)
+        for id in ids:
+            self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
+                                    mav2.MAV_CMD_DO_SET_MODE,  # ID of command to send
+                                    0,  # Confirmation
+                                    mav2.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,  # param1: Message ID to be streamed
+                                    mav2.COPTER_MODE_GUIDED) # param2: Interval in microseconds
+            cmd_done = False
+            start_wait = time.time_ns()
+            while  (worker.is_running and (time.time_ns() - start_wait <= wait_time)):
+                if ((drones[id].heartbeat is not None) and
+                    drones[id].heartbeat.custom_mode == mav2.COPTER_MODE_GUIDED):
+                    cmd_done = True
+                    break
+                time.sleep(0.2)
+            if not cmd_done:
+                self.call_from_thread(self.print_textlog, '[b]FAILED[/] Start Mission on step: [b]set GUIDED[/]', -2, id)
+                button.disabled = False
+                sel_list.disabled = False
+                return
         # ARM
-        self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
-                                   mav2.MAV_CMD_COMPONENT_ARM_DISARM,  # ID of command to send
-                                   0, 1)
-        cmd_done = False
-        start_wait = time.time_ns()
-        while  (worker.is_running and (time.time_ns() - start_wait <= wait_time)):
-            if drones[id].heartbeat.base_mode & mav2.MAV_MODE_FLAG_SAFETY_ARMED:
-                cmd_done = True
-                break
-            time.sleep(0.2)
-        if not cmd_done:
-            self.call_from_thread(self.print_textlog, 'Failed Start Mission on step: ARM', -2, id)
-            return
+        self.call_from_thread(self.print_textlog, 'SEND [b]ARM[/]', -2)
+        for id in ids:
+            self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
+                                    mav2.MAV_CMD_COMPONENT_ARM_DISARM,  # ID of command to send
+                                    0, 1)
+            cmd_done = False
+            start_wait = time.time_ns()
+            while  (worker.is_running and (time.time_ns() - start_wait <= wait_time)):
+                if drones[id].heartbeat.base_mode & mav2.MAV_MODE_FLAG_SAFETY_ARMED:
+                    cmd_done = True
+                    break
+                time.sleep(0.2)
+            if not cmd_done:
+                self.call_from_thread(self.print_textlog, '[b]FAILED[/] Start Mission on step: [b]ARM[/]', -2, id)
+                # ДИЗАРМИМ УЖЕ ЗААРМЛЕННЫЕ
+                self.call_from_thread(self.print_textlog, '[b]START DISARM DRONES[/]', -2)
+                for armed_id in ids:
+                    self.call_from_thread(self.print_textlog, '[b]START DISARM[/]', -2, armed_id)
+                    self.protocol_command_long(armed_id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
+                                               mav2.MAV_CMD_COMPONENT_ARM_DISARM,  # ID of command to send
+                                               0, 0, attempts_сount=100)
+                    if armed_id == id:
+                        break
+                button.disabled = False
+                sel_list.disabled = False
+                return
         # AUTO
-        self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
-                                   mav2.MAV_CMD_DO_SET_MODE,  # ID of command to send
-                                   0,  # Confirmation
-                                   mav2.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,  # param1: Message ID to be streamed
-                                   mav2.COPTER_MODE_AUTO) # param2: Interval in microseconds
-        start_wait = time.time_ns()
-        while  (worker.is_running and (time.time_ns() - start_wait <= wait_time)):
-            if drones[id].heartbeat.custom_mode == mav2.COPTER_MODE_AUTO:
-                self.call_from_thread(self.print_textlog, 'Failed Start Sission on step: set AUTO', -2, id)
-                break
-            time.sleep(0.2)
+        self.call_from_thread(self.print_textlog, 'SEND [b]AUTO MODE[/]', -2)
+        for id in ids:
+            self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
+                                    mav2.MAV_CMD_DO_SET_MODE,  # ID of command to send
+                                    0,  # Confirmation
+                                    mav2.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,  # param1: Message ID to be streamed
+                                    mav2.COPTER_MODE_AUTO) # param2: Interval in microseconds
+            cmd_done = False
+            start_wait = time.time_ns()
+            while  (worker.is_running and (time.time_ns() - start_wait <= wait_time)):
+                if drones[id].heartbeat.custom_mode == mav2.COPTER_MODE_AUTO:
+                    cmd_done = True
+                    break
+                time.sleep(0.2)
+            if not cmd_done:
+                self.call_from_thread(self.print_textlog, '[b]FAILED[/] Start Sission on step: [b]set AUTO[/]', -2, id)
+        button.disabled = False
+        sel_list.disabled = False
         
     @work(thread=True)
     def protocol_command_long(self,
@@ -299,15 +344,16 @@ class ArduMultiApp(App):
                               param4: float = 0,
                               param5: float = 0,
                               param6: float = 0,
-                              param7: float = 0):
+                              param7: float = 0,
+                              attempts_сount: int = 3):
         worker = get_current_worker()
-        wait_time = 3 * sec2ns
+        wait_time = sec2ns
         telem = self.find_telem(target_system)
         mav_tx: mav2.MAVLink = telem.mav
         msg_tx = mav_tx.command_long_encode(target_system, target_component, command, confirmation,
                                             param1, param2, param3, param4, param5, param6, param7)
         with drones[target_system].prot_cmd_lock:
-            for _ in range(3):
+            for _ in range(attempts_сount):
                 telems[telem].fifo_tx.put(msg_tx) # Отправляем сообщение с командой
                 # Ждем ответ
                 start_wait = time.time_ns()
