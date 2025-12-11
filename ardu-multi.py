@@ -77,7 +77,8 @@ class ArduMultiApp(App):
                     with TabPane("All", id='tab_all'):
                         yield RichLog(id='textlog_all')
             with act_cont:
-                yield Button('Start Mission', variant="primary", id='btn_start_mission')
+                yield Button('Start Photo', variant="primary", id='btn_start_photo')
+                yield Button('Stop Photo', variant="primary", id='btn_stop_photo')
                 yield drone_select_list
 
     def on_mount(self) -> None:
@@ -87,10 +88,14 @@ class ArduMultiApp(App):
 
     def action_toggle_dark(self) -> None:
         self.theme = ('textual-dark' if self.theme == 'textual-light' else 'textual-light')
+    
+    @on(Button.Pressed, "#btn_start_photo")  
+    def btn_start_photo(self):
+        self.task_start_stop_photo(True, 0.2)
 
-    @on(Button.Pressed, "#btn_start_mission")  
-    def btn_start_mission_pressed(self):
-        self.task_start_mission()
+    @on(Button.Pressed, "#btn_stop_photo")  
+    def btn_stop_photo(self):
+        self.task_start_stop_photo()
 
     def print_textlog(self, text: str, severity=None, id=None):
         prefix = time.strftime('[%H:%M:%S] ', time.localtime())
@@ -249,87 +254,21 @@ class ArduMultiApp(App):
         pass
 
     @work(thread=True)
-    def task_start_mission(self):
-        worker = get_current_worker()
-        wait_time = 10 * sec2ns
-        button = self.query_one('#btn_start_mission', Button)
+    def task_start_stop_photo(self, is_start: int = False, interval: float = 0):
+        task_str = 'Start' if is_start else 'Stop'
+        task_cmd = mav2.MAV_CMD_IMAGE_START_CAPTURE if is_start else mav2.MAV_CMD_IMAGE_STOP_CAPTURE
         sel_list = self.query_one('#sel_drones', SelectionList)
-        button.disabled = True
-        sel_list.disabled = True
         ids = sel_list.selected
         if len(ids) == 0:
-            self.call_from_thread(self.print_textlog, '[b]FAILED[/] Start Mission: [b]No drone selected[/]', -2)
-            button.disabled = False
-            sel_list.disabled = False
+            self.call_from_thread(self.print_textlog, f'[b]FAILED[/] {task_str} Photo: [b]No drone selected[/]', -2)
             return
-        self.call_from_thread(self.print_textlog, '[b]START MISSION[/]', -2)
-        # GUIDED
-        self.call_from_thread(self.print_textlog, 'SEND [b]GUIDED MODE[/]', -2)
+        self.call_from_thread(self.print_textlog, f'[b]{task_str.upper()} PHOTO[/]', -2)
         for id in ids:
             self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
-                                    mav2.MAV_CMD_DO_SET_MODE,  # ID of command to send
+                                    task_cmd,  # ID of command to send
                                     0,  # Confirmation
-                                    mav2.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,  # param1: Message ID to be streamed
-                                    mav2.COPTER_MODE_GUIDED) # param2: Interval in microseconds
-            cmd_done = False
-            start_wait = time.time_ns()
-            while  (worker.is_running and (time.time_ns() - start_wait <= wait_time)):
-                if ((drones[id].heartbeat is not None) and
-                    drones[id].heartbeat.custom_mode == mav2.COPTER_MODE_GUIDED):
-                    cmd_done = True
-                    break
-                time.sleep(0.2)
-            if not cmd_done:
-                self.call_from_thread(self.print_textlog, '[b]FAILED[/] Start Mission on step: [b]set GUIDED[/]', -2, id)
-                button.disabled = False
-                sel_list.disabled = False
-                return
-        # ARM
-        self.call_from_thread(self.print_textlog, 'SEND [b]ARM[/]', -2)
-        for id in ids:
-            self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
-                                    mav2.MAV_CMD_COMPONENT_ARM_DISARM,  # ID of command to send
-                                    0, 1)
-            cmd_done = False
-            start_wait = time.time_ns()
-            while  (worker.is_running and (time.time_ns() - start_wait <= wait_time)):
-                if drones[id].heartbeat.base_mode & mav2.MAV_MODE_FLAG_SAFETY_ARMED:
-                    cmd_done = True
-                    break
-                time.sleep(0.2)
-            if not cmd_done:
-                self.call_from_thread(self.print_textlog, '[b]FAILED[/] Start Mission on step: [b]ARM[/]', -2, id)
-                # ДИЗАРМИМ УЖЕ ЗААРМЛЕННЫЕ
-                self.call_from_thread(self.print_textlog, '[b]START DISARM DRONES[/]', -2)
-                for armed_id in ids:
-                    self.call_from_thread(self.print_textlog, '[b]START DISARM[/]', -2, armed_id)
-                    self.protocol_command_long(armed_id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
-                                               mav2.MAV_CMD_COMPONENT_ARM_DISARM,  # ID of command to send
-                                               0, 0, attempts_сount=100)
-                    if armed_id == id:
-                        break
-                button.disabled = False
-                sel_list.disabled = False
-                return
-        # AUTO
-        self.call_from_thread(self.print_textlog, 'SEND [b]AUTO MODE[/]', -2)
-        for id in ids:
-            self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,  # Target component ID
-                                    mav2.MAV_CMD_DO_SET_MODE,  # ID of command to send
-                                    0,  # Confirmation
-                                    mav2.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,  # param1: Message ID to be streamed
-                                    mav2.COPTER_MODE_AUTO) # param2: Interval in microseconds
-            cmd_done = False
-            start_wait = time.time_ns()
-            while  (worker.is_running and (time.time_ns() - start_wait <= wait_time)):
-                if drones[id].heartbeat.custom_mode == mav2.COPTER_MODE_AUTO:
-                    cmd_done = True
-                    break
-                time.sleep(0.2)
-            if not cmd_done:
-                self.call_from_thread(self.print_textlog, '[b]FAILED[/] Start Sission on step: [b]set AUTO[/]', -2, id)
-        button.disabled = False
-        sel_list.disabled = False
+                                    0,  # Cam id (0 - all)
+                                    interval)
 
     @work(thread=True)
     def protocol_command_long(self,
