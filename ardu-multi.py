@@ -18,7 +18,7 @@ from rich.text import Text
 
 sec2ns = 1000000000
 
-apm_arm_status = ('DISARM', 'ARM')
+apm_arm_status = {0:'DISARM', mav2.MAV_MODE_FLAG_SAFETY_ARMED:'ARM'}
 
 all_sev = ('[white on #8D0638] EMER [/] ',
            '[white on #8D0638] ALERT [/]',
