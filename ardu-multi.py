@@ -61,7 +61,8 @@ class ArduMultiApp(App):
                           ('Batt Volt', 'bat_col'),
                           ('Latitude', 'lat_col'),
                           ('Longitude', 'lon_col'),
-                          ('Altitude', 'alt_col'))
+                          ('Altitude', 'alt_col'),
+                          ('GPS Stat', 'gps_stat'))
         tabs = TabbedContent(id='tabbed_textlog', classes='big_block')
         tabs.border_title = 'STATUSTEXT'
         act_cont = Container(id='container_actions', classes='big_block')
@@ -175,6 +176,11 @@ class ArduMultiApp(App):
                             self.call_from_thread(table.update_cell, f'row_{rx_sysid}', 'lon_col', f'{rx_gpos.lon / 10000000}', update_width=True)
                             # Обновление Altitude
                             self.call_from_thread(table.update_cell, f'row_{rx_sysid}', 'alt_col', f'{(rx_gpos.relative_alt / 1000):.2f}', update_width=True)
+                        elif msg_rx_id == mav2.MAVLINK_MSG_ID_GPS_RAW_INT:
+                            rx_gps: mav2.MAVLink_gps_raw_int_message = msg_rx
+                            # Обновление GPS Stat
+                            fix_type_str = mav2.enums['GPS_FIX_TYPE'][rx_gps.fix_type].name.replace('GPS_FIX_TYPE_', '')
+                            self.call_from_thread(table.update_cell, f'row_{rx_sysid}', 'gps_stat', fix_type_str, update_width=True)
                         elif msg_rx_id == mav2.MAVLINK_MSG_ID_STATUSTEXT:
                             rx_text: mav2.MAVLink_statustext_message = msg_rx
                             # TODO: Как-то проверить текст из нескольких чанков
@@ -214,7 +220,7 @@ class ArduMultiApp(App):
     def task_add_drone(self, id, telem):
         # Строка в таблице
         table = self.query_one('#table_log', DataTable)
-        table.add_row(*('-', '-', '-', '-', '-', '-'), key = f'row_{id}', label = f'Drone {id}')
+        table.add_row(*('-', '-', '-', '-', '-', '-', '-'), key = f'row_{id}', label = f'Drone {id}')
         # Вкладка STATUSTEXT
         new_textlog = RichLog(id=f'textlog_{id}')
         new_tab = TabPane(f'Drone {id}', new_textlog, id=f'tab_{id}')
@@ -242,6 +248,14 @@ class ArduMultiApp(App):
                                    mav2.MAV_CMD_SET_MESSAGE_INTERVAL,
                                    0,  # Confirmation
                                    mav2.MAVLINK_MSG_ID_GLOBAL_POSITION_INT,
+                                   1000000)
+        # GPS_RAW_INT
+        if args.debug:
+            self.print_textlog('Send [b]SET_MESSAGE_INTERVAL[/] msg: [b]GPS_RAW_INT[/]', -2, id)
+        self.protocol_command_long(id, mav2.MAV_COMP_ID_AUTOPILOT1,
+                                   mav2.MAV_CMD_SET_MESSAGE_INTERVAL,
+                                   0,  # Confirmation
+                                   mav2.MAVLINK_MSG_ID_GPS_RAW_INT,
                                    1000000)
 
     def task_remove_telem(self, telem):
