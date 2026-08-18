@@ -6,6 +6,7 @@ import serial
 import time
 from pymavlink import mavutil
 from pymavlink.dialects.v20 import ardupilotmega as mav2
+from pyrtcm import RTCMReader
 from textual import work, on
 from textual.app import App, ComposeResult
 from textual.worker import get_current_worker
@@ -45,6 +46,9 @@ class Drone_data:
 # {com_ports:[drone_id]}
 telems: dict[mavutil.mavserial, Telem_data] = {}
 drones: dict[int, Drone_data] = {}
+rtk_reader: RTCMReader | None = None
+rtk_seq_id = 0
+RTCM_FRAGMENT_LEN = 180
 
 
 class ArduMultiApp(App):
@@ -192,12 +196,39 @@ class ArduMultiApp(App):
                                 cmd_str = mav2.enums['MAV_CMD'][rx_cmd_ack.command].name.replace('MAV_CMD_', '')
                                 cmd_result_str = mav2.enums['MAV_RESULT'][rx_cmd_ack.result].name.replace('MAV_RESULT_', '')
                                 self.call_from_thread(self.print_textlog, f'Received ACK: cmd: [b]{cmd_str}[/] result: [b]{cmd_result_str}[/]', None, rx_sysid)
-                        else:
-                            if args.debug:
-                                self.call_from_thread(self.print_textlog, f'Received [b]{msg_rx.get_type()}[/]', None, rx_sysid)
+                        # else:
+                        if args.debug:
+                            self.call_from_thread(self.print_textlog, f'Received [b]{msg_rx.get_type()}[/]', None, rx_sysid)
+                if rtk_reader:
+                    raw_data, msg_rtcm = rtk_reader.read()
+                    if msg_rtcm is not None:
+                        if args.debug:
+                            self.call_from_thread(self.print_textlog, f'Received RTCM [b]{msg_rtcm.identity}[/]', 7)
+                        self.send_rtcm_data(raw_data)
             except Exception as e:
                 self.call_from_thread(self.print_textlog, f'App Failure ({e})', 0)
                 return
+
+    # ------------------------------------------------
+    # Проброс поправок RTCM с RTK базы на дроны MAVLink
+    # ------------------------------------------------
+    def send_rtcm_data(self, raw_data: bytes):
+        if len(raw_data) > RTCM_FRAGMENT_LEN * 4: # Максимум 4 фрагмента (2 бита fragment_id)
+            self.call_from_thread(self.print_textlog, f'RTCM message too long ({len(raw_data)} bytes), dropped', 3)
+            return False
+        global rtk_seq_id
+        rtk_seq_id = rtk_seq_id % 32 # 5 бит под sequence_id, вычисляем раньше запаковки в качестве защиты
+        fragments = [raw_data[i:i + RTCM_FRAGMENT_LEN] for i in range(0, len(raw_data), RTCM_FRAGMENT_LEN)] or [b'']
+        for fragment_id, fragment in enumerate(fragments):
+            flags = 0
+            if len(fragments) > 1: # RTCM сообщение фрагментировано
+                flags = 1 | (fragment_id << 1) | (rtk_seq_id << 3)
+            data = list(fragment) + [0] * (RTCM_FRAGMENT_LEN - len(fragment)) # Дополняем до 180 байт
+            for telem in telems:
+                msg_tx = telem.mav.gps_rtcm_data_encode(flags, len(fragment), data)
+                telems[telem].fifo_tx.put(msg_tx)
+        rtk_seq_id = rtk_seq_id + 1
+        return True
 
     # ----------------------------------------
     # Отправка сообщений и Protocol Heartbeat
@@ -393,6 +424,14 @@ def com_parse(arg):
         raise argparse.ArgumentTypeError(f'[{arg}] use format PORT:BAUDRATE')
 
 
+def rtk_com_parse(arg):
+    try:
+        rtk_port, rtk_baudrate = arg.split(':')
+        return (rtk_port.upper(), int(rtk_baudrate))
+    except:
+        raise argparse.ArgumentTypeError(f'[{arg}] use format PORT:BAUDRATE')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', '--debug',
@@ -404,6 +443,11 @@ if __name__ == '__main__':
                         required=True,
                         help='COM port with MAVLink telemetry',
                         metavar='PORT:BAUDRATE')
+    parser.add_argument('-r', '--rtk_port',
+                        type=rtk_com_parse,
+                        required=False,
+                        help='COM port with RTK base station',
+                        metavar='PORT:BAUDRATE')
     args = parser.parse_args()
     # Удаление повторений, если есть (Уже не нужно, есть словарь)
     ports_dict = dict(args.port) if args.port else {}
@@ -411,6 +455,9 @@ if __name__ == '__main__':
     try:
         for port, baud in ports_dict.items():
             telems[mavutil.mavlink_connection(port, baud)] = Telem_data()
+        if args.rtk_port:
+            rtk_port, rtk_baud = args.rtk_port
+            rtk_reader = RTCMReader(serial.Serial(rtk_port, rtk_baud, timeout=0))
         app = ArduMultiApp()
         app.run()
     except Exception as e:
